@@ -22,6 +22,46 @@ import ig_download
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 
+HELP_TEXT = """\
+IGbulkDL - batch Instagram downloader
+=====================================
+
+HOW IT WORKS
+  1. Collect post URLs into a .txt file, one URL per line
+     (e.g. with the companion IG Link Collector Tampermonkey script).
+  2. Pick the URL file, a collection name and (optionally) a cookies file.
+  3. Click Start Download. Files land in <Output folder>/<collection>/.
+
+COOKIE MODES
+  fallback (default)  Try without cookies; use them only when a post fails
+                      because it is age-restricted or private.
+  always              Send cookies on every request (can reduce rate limiting).
+  never               Never use the cookies file.
+
+OPTIONS
+  Output folder   Base folder for downloads; each collection is a subfolder.
+  Log file        Where the JSON log is written (default: <collection>.json).
+  Dry run         Extract metadata only, download nothing.
+  Retry failed    Re-attempt URLs that failed in a previous run.
+  Filename        Template for output names, e.g. {author}_{shortcode}.
+
+FEATURES
+  - Videos / reels via yt-dlp, images via instaloader, mixed carousels too
+  - Cookie fallback for age/private posts (cookies stay unused otherwise)
+  - Crash-safe JSON logs; a corrupt log is moved aside, never overwritten
+  - A key symbol marks downloads that used cookies
+  - Dashboard (ig_dashboard.html) with stats, table and video preview
+  - Log Viewer tab with search, filters and per-entry details
+
+TIPS
+  - ffmpeg must be on PATH so yt-dlp can merge video + audio.
+  - Keep yt-dlp up to date:  pip install -U yt-dlp
+  - Treat cookies.txt like a password: never commit, paste or share it.
+
+Buttons below:  Dashboard opens ig_dashboard.html  -  Output folder opens the
+download folder  -  Help shows this window.
+"""
+
 
 class IGDownloaderApp:
     def __init__(self, root: tk.Tk):
@@ -35,6 +75,7 @@ class IGDownloaderApp:
         self._ok_count = 0
         self._fail_count = 0
         self._total = 0
+        self._ck_count = 0
         self._lv_all: list[dict] = []
         self._lv_filtered: list[dict] = []
         self._lv_sorted: list[dict] = []
@@ -56,6 +97,18 @@ class IGDownloaderApp:
             if theme in style.theme_names():
                 style.theme_use(theme)
                 break
+
+        # Menu bar (help / discoverability)
+        menubar = tk.Menu(self.root)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About / Features…", command=self._show_help)
+        help_menu.add_command(label="Filename template help…", command=self._show_template_help)
+        help_menu.add_separator()
+        help_menu.add_command(label="Open dashboard", command=self._open_dashboard)
+        help_menu.add_command(label="Open output folder", command=self._open_output_folder)
+        help_menu.add_command(label="Open README", command=self._open_readme)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        self.root.config(menu=menubar)
 
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
@@ -82,40 +135,49 @@ class IGDownloaderApp:
         cfg.pack(fill="x", padx=6, pady=(6, 4))
         cfg.columnconfigure(1, weight=1)
 
-        labels = ["URL file (.txt)", "Collection name", "Log file", "Cookies file (optional)"]
         self._url_var = tk.StringVar()
         self._col_var = tk.StringVar()
         self._logf_var = tk.StringVar()
         self._logf_auto = True  # True = log file was auto-derived from collection
         self._ck_var = tk.StringVar()
-        vars_ = [self._url_var, self._col_var, self._logf_var, self._ck_var]
+        self._out_var = tk.StringVar(value="downloads")
 
-        for row, (lbl, var) in enumerate(zip(labels, vars_)):
+        fields = [
+            ("URL file (.txt)",         self._url_var, self._browse_url),
+            ("Collection name",         self._col_var, None),
+            ("Log file",                self._logf_var, None),
+            ("Cookies file (fallback)", self._ck_var,  self._browse_cookies),
+            ("Output folder",           self._out_var, self._browse_output),
+        ]
+
+        for row, (lbl, var, browse_cmd) in enumerate(fields):
             ttk.Label(cfg, text=lbl).grid(row=row, column=0, sticky="w",
                                            padx=(0, 12), pady=3)
-            if row in (0, 3):  # rows with Browse buttons
+            if browse_cmd:
                 fr = ttk.Frame(cfg)
                 fr.grid(row=row, column=1, sticky="ew", pady=3)
                 fr.columnconfigure(0, weight=1)
                 ttk.Entry(fr, textvariable=var).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-                cmd = self._browse_url if row == 0 else self._browse_cookies
-                ttk.Button(fr, text="Browse…", width=9, command=cmd).grid(row=0, column=1)
+                ttk.Button(fr, text="Browse…", width=9, command=browse_cmd).grid(row=0, column=1)
             else:
                 ttk.Entry(cfg, textvariable=var).grid(row=row, column=1, sticky="ew", pady=3)
 
+        next_row = len(fields)
+
         # Options row
         opts = ttk.Frame(cfg)
-        opts.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 2))
+        opts.grid(row=next_row, column=0, columnspan=2, sticky="w", pady=(6, 2))
         self._dry_var = tk.BooleanVar()
         self._retry_var = tk.BooleanVar()
         ttk.Checkbutton(opts, text="Dry run (no download)", variable=self._dry_var).pack(side="left", padx=(0, 20))
         ttk.Checkbutton(opts, text="Retry previously failed", variable=self._retry_var).pack(side="left")
+        next_row += 1
 
         # Filename template row
-        ttk.Label(cfg, text="Filename template").grid(row=5, column=0, sticky="w",
+        ttk.Label(cfg, text="Filename template").grid(row=next_row, column=0, sticky="w",
                                                       padx=(0, 12), pady=3)
         tmpl_row = ttk.Frame(cfg)
-        tmpl_row.grid(row=5, column=1, sticky="ew", pady=3)
+        tmpl_row.grid(row=next_row, column=1, sticky="ew", pady=3)
         tmpl_row.columnconfigure(0, weight=1)
         self._tmpl_var = tk.StringVar(value="{shortcode}")
         presets = list(ig_download.FILENAME_PRESETS.keys())
@@ -124,6 +186,18 @@ class IGDownloaderApp:
         tmpl_combo.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(tmpl_row, text="?", width=3,
                    command=self._show_template_help).grid(row=0, column=1)
+        next_row += 1
+
+        # Cookies mode row
+        ttk.Label(cfg, text="Cookies mode").grid(row=next_row, column=0, sticky="w",
+                                                 padx=(0, 12), pady=3)
+        ck_row = ttk.Frame(cfg)
+        ck_row.grid(row=next_row, column=1, sticky="ew", pady=3)
+        self._ckmode_var = tk.StringVar(value=ig_download.COOKIES_MODE_FALLBACK)
+        ttk.Combobox(ck_row, textvariable=self._ckmode_var, width=12, state="readonly",
+                     values=list(ig_download.COOKIES_MODES)).grid(row=0, column=0, sticky="w")
+        ttk.Label(ck_row, text="fallback = cookies only for age/private posts",
+                  foreground="gray").grid(row=0, column=1, sticky="w", padx=(8, 0))
 
         # Auto-link collection → log file
         self._col_var.trace_add("write", self._on_collection_change)
@@ -137,6 +211,9 @@ class IGDownloaderApp:
         self._start_btn.pack(side="left", padx=(0, 8))
         self._stop_btn = ttk.Button(btn_row, text="■  Stop", command=self._stop_download, state="disabled")
         self._stop_btn.pack(side="left")
+        ttk.Button(btn_row, text="📊 Dashboard", command=self._open_dashboard).pack(side="right")
+        ttk.Button(btn_row, text="📂 Output folder", command=self._open_output_folder).pack(side="right", padx=(0, 8))
+        ttk.Button(btn_row, text="❔ Help", command=self._show_help).pack(side="right", padx=(0, 8))
 
         # Progress section
         prog = ttk.LabelFrame(parent, text="Progress", padding=(10, 6))
@@ -160,6 +237,8 @@ class IGDownloaderApp:
         self._fail_lbl.pack(side="left", padx=(0, 16))
         self._rl_lbl = ttk.Label(stats, text="", foreground="#b45309")
         self._rl_lbl.pack(side="left")
+        self._ck_lbl = ttk.Label(stats, text="", foreground="#7c3aed")
+        self._ck_lbl.pack(side="left", padx=(16, 0))
 
         # Output log
         out = ttk.LabelFrame(parent, text="Output", padding=4)
@@ -210,6 +289,50 @@ class IGDownloaderApp:
         txt.config(state="disabled")
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 10))
 
+    # ── Help / open helpers ───────────────────────────────────────────
+
+    def _open_path(self, path):
+        path = os.path.abspath(str(path))
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(path)  # Windows
+            else:
+                webbrowser.open(Path(path).as_uri())
+        except OSError as e:
+            messagebox.showerror("Cannot open", f"{path}\n\n{e}")
+
+    def _open_dashboard(self):
+        self._open_path(SCRIPT_DIR / "ig_dashboard.html")
+
+    def _open_readme(self):
+        readme = SCRIPT_DIR / "README.md"
+        if readme.exists():
+            self._open_path(readme)
+        else:
+            messagebox.showinfo("Not found", "README.md was not found next to the app.")
+
+    def _open_output_folder(self):
+        out = self._out_var.get().strip() or "downloads"
+        if not os.path.isabs(out):
+            out = str(SCRIPT_DIR / out)
+        try:
+            os.makedirs(out, exist_ok=True)
+        except OSError:
+            pass
+        self._open_path(out)
+
+    def _show_help(self):
+        win = tk.Toplevel(self.root)
+        win.title("About / Features")
+        win.resizable(False, False)
+        txt = tk.Text(win, wrap="word", width=78, height=28,
+                      font=("Consolas", 9), relief="flat",
+                      bg="#1e1e1e", fg="#d4d4d4")
+        txt.pack(padx=12, pady=12)
+        txt.insert("1.0", HELP_TEXT)
+        txt.config(state="disabled")
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 10))
+
     # ── Log viewer tab ────────────────────────────────────────────────
 
     def _build_log_viewer_tab(self, parent):
@@ -236,6 +359,7 @@ class IGDownloaderApp:
             ("video",    "Videos",     "#1d6fad"),
             ("carousel", "Carousels",  "#6d28d9"),
             ("image",    "Images",     "#b45309"),
+            ("cookies",  "Cookies 🔑", "#7c3aed"),
         ]:
             cell = ttk.Frame(stats_bar)
             cell.pack(side="left", padx=(10, 10), pady=6)
@@ -252,7 +376,6 @@ class IGDownloaderApp:
         self._lv_q = tk.StringVar()
         self._lv_q.trace_add("write", lambda *_: self._apply_filter())
         ttk.Entry(flt, textvariable=self._lv_q, width=22).pack(side="left", padx=(0, 12))
-
         ttk.Label(flt, text="Status:").pack(side="left", padx=(0, 4))
         self._lv_st = tk.StringVar(value="All")
         sc = ttk.Combobox(flt, textvariable=self._lv_st, width=9,
@@ -267,6 +390,10 @@ class IGDownloaderApp:
         tc.pack(side="left", padx=(0, 12))
         tc.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
 
+        self._lv_ck_only = tk.BooleanVar()
+        ttk.Checkbutton(flt, text="🔑 cookies only", variable=self._lv_ck_only,
+                        command=self._apply_filter).pack(side="left", padx=(0, 12))
+
         self._lv_count = ttk.Label(flt, text="", foreground="gray")
         self._lv_count.pack(side="right")
 
@@ -274,12 +401,12 @@ class IGDownloaderApp:
         tv_fr = ttk.Frame(parent)
         tv_fr.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
-        cols = ("num", "author", "caption", "shortcode", "type", "status", "date")
+        cols = ("num", "author", "caption", "shortcode", "type", "status", "ck", "date")
         self._tree = ttk.Treeview(tv_fr, columns=cols, show="headings", selectmode="browse")
 
         widths = {"num": 40, "author": 130, "caption": 200, "shortcode": 110,
-                  "type": 65, "status": 65, "date": 125}
-        anchors = {"num": "e", "type": "center", "status": "center"}
+                  "type": 65, "status": 65, "ck": 34, "date": 125}
+        anchors = {"num": "e", "type": "center", "status": "center", "ck": "center"}
 
         for col in cols:
             self._tree.heading(col, text=col.capitalize(),
@@ -319,11 +446,19 @@ class IGDownloaderApp:
         if p:
             self._ck_var.set(p)
 
+    def _browse_output(self):
+        p = filedialog.askdirectory(
+            initialdir=str(SCRIPT_DIR), title="Select output folder")
+        if p:
+            self._out_var.set(p)
+
     def _start_download(self):
         url_file  = self._url_var.get().strip()
         collection = self._col_var.get().strip()
         log_file  = self._logf_var.get().strip() or "ig_download_log.json"
         cookies   = self._ck_var.get().strip() or None
+        cookies_mode = self._ckmode_var.get().strip() or ig_download.COOKIES_MODE_FALLBACK
+        output_base  = self._out_var.get().strip() or "downloads"
         dry_run   = self._dry_var.get()
         retry     = self._retry_var.get()
 
@@ -336,8 +471,12 @@ class IGDownloaderApp:
         if not collection:
             messagebox.showerror("Missing input", "Please enter a collection name.")
             return
+        if cookies and not os.path.isfile(cookies):
+            messagebox.showerror("File not found", f"Cookies file not found:\n{cookies}")
+            return
 
         self._ok_count = self._fail_count = self._total = 0
+        self._ck_count = 0
         self._clear_log()
         self._pbar["value"] = 0
         self._status_lbl.config(text="Starting…", foreground="gray")
@@ -345,6 +484,7 @@ class IGDownloaderApp:
         self._ok_lbl.config(text="OK: 0")
         self._fail_lbl.config(text="Failed: 0")
         self._rl_lbl.config(text="")
+        self._ck_lbl.config(text="")
         self._start_btn.config(state="disabled")
         self._stop_btn.config(state="normal")
 
@@ -359,6 +499,8 @@ class IGDownloaderApp:
                     collection=collection,
                     log_file=log_file or None,
                     cookies=cookies,
+                    cookies_mode=cookies_mode,
+                    output_base=output_base,
                     retry_failed=retry,
                     dry_run=dry_run,
                     filename_template=self._tmpl_var.get().strip() or "{shortcode}",
@@ -403,10 +545,13 @@ class IGDownloaderApp:
         elif t == "progress":
             self._total = ev.get("total", self._total)
             st = ev.get("status", "")
+            used = bool(ev.get("used_cookies"))
             if st == "ok":
                 self._ok_count += 1
             elif st == "failed":
                 self._fail_count += 1
+            if used:
+                self._ck_count += 1
 
             idx = ev.get("index", 0)
             pct = (idx + 1) / self._total * 100 if self._total else 0
@@ -418,15 +563,17 @@ class IGDownloaderApp:
             self._ok_lbl.config(text=f"OK: {self._ok_count}")
             self._fail_lbl.config(text=f"Failed: {self._fail_count}")
             self._rl_lbl.config(text="")
+            self._ck_lbl.config(text=f"🔑 Cookies: {self._ck_count}" if self._ck_count else "")
 
             author = ev.get("author") or ev.get("username") or "?"
             sc = ev.get("shortcode", "")
+            key = "🔑 " if used else ""
             if st == "ok":
-                self._append(f"OK    {author:<20} {sc}", "ok")
+                self._append(f"OK    {author:<20} {sc}{key}", "ok")
             elif st == "failed":
                 cat = ev.get("error_category") or "error"
                 detail = ev.get("error_detail") or ""
-                self._append(f"FAIL  {author:<20} {sc}  [{cat}]", "fail")
+                self._append(f"FAIL  {author:<20} {sc}  [{cat}]{(' 🔑' if used else '')}", "fail")
                 if detail:
                     self._append(f"      {detail[:180]}", "fail")
             else:
@@ -441,6 +588,11 @@ class IGDownloaderApp:
         elif t == "rate_limit_tick":
             rem = ev.get("remaining", 0)
             self._rl_lbl.config(text=f"⚠ Rate limited — {rem}s remaining")
+
+        elif t == "cookie_fallback":
+            sc = ev.get("shortcode", "")
+            cat = ev.get("first_error_category") or "restricted"
+            self._append(f"🔒 {sc}: retrying with cookies ({cat})", "rl")
 
         elif t in ("rate_limit_abort",):
             self._append("Too many consecutive rate limits — aborted.", "fail")
@@ -460,6 +612,9 @@ class IGDownloaderApp:
             self._status_lbl.config(text="Complete", foreground="green")
             self._rl_lbl.config(text="")
             self._finish()
+
+        elif t == "warning":
+            self._append(f"⚠ {ev.get('message', '')}", "rl")
 
         elif t == "error":
             self._append(f"ERROR: {ev.get('message', '')}", "fail")
@@ -534,9 +689,11 @@ class IGDownloaderApp:
         video = sum(1 for i in self._lv_all if i.get("media_type") == "video")
         carousel = sum(1 for i in self._lv_all if i.get("media_type") == "carousel")
         image = sum(1 for i in self._lv_all if i.get("media_type") in ("image", "image_only"))
+        cookies = sum(1 for i in self._lv_all if i.get("used_cookies"))
 
         for k, v in [("total", len(self._lv_all)), ("ok", ok), ("failed", fail),
-                     ("video", video), ("carousel", carousel), ("image", image)]:
+                     ("video", video), ("carousel", carousel), ("image", image),
+                     ("cookies", cookies)]:
             self._lv_stats[k].config(text=str(v))
 
         self._lv_sort_col = "num"
@@ -547,10 +704,13 @@ class IGDownloaderApp:
         q = self._lv_q.get().lower()
         fst = self._lv_st.get()
         fty = self._lv_ty.get()
+        ck_only = bool(getattr(self, "_lv_ck_only", None) and self._lv_ck_only.get())
 
         filtered = []
         for item in self._lv_all:
             if fst != "All" and item.get("status") != fst:
+                continue
+            if ck_only and not item.get("used_cookies"):
                 continue
             mt = item.get("media_type", "")
             if fty != "All" and mt != fty and not (fty == "image" and mt == "image_only"):
@@ -611,8 +771,9 @@ class IGDownloaderApp:
                     pass
 
             tag = "ok" if st == "ok" else "fail" if st == "failed" else "dry" if st == "dry_run" else ""
+            ck = "🔑" if item.get("used_cookies") else ""
             self._tree.insert("", "end", iid=str(i),
-                              values=(i + 1, author, caption, sc, mt, st, ts),
+                              values=(i + 1, author, caption, sc, mt, st, ck, ts),
                               tags=(tag,) if tag else ())
 
     def _on_right_click(self, event):
@@ -635,6 +796,9 @@ class IGDownloaderApp:
         if item.get("caption"):
             menu.add_command(label="Copy caption",
                              command=lambda: self._clip(item.get("caption", "")))
+        if item.get("error_detail"):
+            menu.add_command(label="Copy error",
+                             command=lambda: self._clip(item.get("error_detail", "")))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _on_double_click(self, event):

@@ -1,2 +1,4 @@
+# Keep yt-dlp up to date: Instagram changes its private API often. If you see
+# "Failed to parse JSON", first run:  pip install -U yt-dlp
 yt-dlp
 instaloader

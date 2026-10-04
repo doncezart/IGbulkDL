@@ -562,6 +562,13 @@ td.num { color: var(--muted2); text-align: right; width: 40px; font-family: ui-m
         <div class="dz-icon">&#128196;</div>
         <p>Drop <code>*.json</code> log files here or click <strong>Load JSON</strong> above</p>
       </div>
+      <p class="text-muted text-sm" style="margin-top:12px">
+        &#128273; marks downloads that authenticated with cookies (shown in the
+        <strong>Cookies used</strong> / <strong>Cookie fallback</strong> stats and next to each
+        row). Drag-and-drop and <strong>Load JSON</strong> work when this page is opened
+        directly; auto-loading <code>ig_logs_manifest.json</code> needs the folder served over
+        HTTP, e.g. <code>python -m http.server</code>.
+      </p>
     </div>
   </div>
 
@@ -789,6 +796,9 @@ function renderStats() {
   const failed    = allItems.filter(i => i.status === 'failed').length;
   const dry       = allItems.filter(i => i.status === 'dry_run').length;
   const ratelimited = allItems.filter(i => i.error_category === 'rate_limited').length;
+  const parseErrors = allItems.filter(i => i.error_category === 'parse_error').length;
+  const usedCookies = allItems.filter(i => i.used_cookies).length;
+  const fallbacks   = allItems.filter(i => i.cookie_fallback).length;
   const videos    = allItems.filter(i => i.media_type === 'video').length;
   const images    = allItems.filter(i => i.media_type === 'image' || i.media_type === 'image_only').length;
   const carousels = allItems.filter(i => i.media_type === 'carousel').length;
@@ -798,6 +808,9 @@ function renderStats() {
     sc('Downloaded', ok, 'stat-ok'),
     sc('Failed', failed, 'stat-fail'),
     sc('Rate limited', ratelimited, 'stat-amber', 'Failed due to Instagram rate limiting'),
+    sc('JSON throttle', parseErrors, 'stat-amber', 'Instagram served HTML instead of JSON - retried with backoff like a rate limit'),
+    sc('Cookies used', usedCookies, 'stat-purple', 'Downloads that authenticated with your cookies file'),
+    sc('Cookie fallback', fallbacks, 'stat-blue', 'Age/private posts that were retried with cookies'),
     sc('Videos', videos, 'stat-blue'),
     sc('Images', images, 'stat-amber'),
     sc('Carousels', carousels, 'stat-purple'),
@@ -869,7 +882,8 @@ function applyFilters() {
     if (q) {
       const hay = [
         item.shortcode, item.author, item.username, item.title, item.caption,
-        item.error_detail, item.error_category, item.saved_path
+        item.error_detail, item.error_category, item.saved_path,
+        item.used_cookies ? 'cookies used' : '', item.cookie_fallback ? 'cookie fallback' : ''
       ].join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
@@ -967,7 +981,7 @@ function renderTable() {
            title="${esc(item.title||item.shortcode||'')}">${esc(item.shortcode||'?')}</a>
       </td>
       <td>${mediaBadge(item.media_type)}</td>
-      <td>${statusBadge(item.status)}</td>
+      <td>${statusBadge(item.status)}${item.used_cookies ? ' <span title="Authenticated with cookies" style="cursor:help">&#128273;</span>' : ''}</td>
       <td style="max-width:200px">${errCell}</td>
       <td style="color:var(--muted);font-size:12px;white-space:nowrap">${ts}</td>
       <td>${actions}</td>

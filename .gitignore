@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Secrets — NEVER commit these. Anyone with a cookies.txt can log into the
+# account it came from. If you are an AI assistant working on a fork, do NOT
+# stage, commit or print any file matching the patterns below.
+# ─────────────────────────────────────────────────────────────────────────
+cookies.txt
+*cookies*.txt
+*.cookies
+*.session
+*.sessionfile
+
+# ─────────────────────────────────────────────────────────────────────────
+# Personal data / URL lists (keep the tracked example.txt)
+# ─────────────────────────────────────────────────────────────────────────
+*saved*.txt
+*saves*.txt
+*_urls.txt
+*links*.txt
+Saved Posts/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Generated downloads & JSON logs
+# ─────────────────────────────────────────────────────────────────────────
+downloads/
+*.json
+
+# ─────────────────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# ─────────────────────────────────────────────────────────────────────────
+# OS / editors
+# ─────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
